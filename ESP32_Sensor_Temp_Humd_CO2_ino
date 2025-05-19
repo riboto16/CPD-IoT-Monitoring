@@ -1,0 +1,164 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "ABlocks_DHT.h"
+#include <Wire.h>
+#include <Adafruit_CCS811.h>
+#include "time.h"
+
+// ===============================
+// Configuración WiFi
+// ===============================
+const char* ssid = "Nombre_Wifi";
+const char* password = "Contraseña_Wifi";
+
+// ===============================
+// Configuración InfluxDB
+// ===============================
+const char* influxURL = "http://IP_Influx:8086/api/v2/write?org=nombre_de_organizacion&bucket=nombre_de_bucket&precision=s";
+const char* influxToken = "Token TOKEN_INFLUX";
+
+// ===============================
+// Identificador del Sensor
+// ===============================
+const char* deviceName = "cpd_in";
+
+// ===============================
+// Configuración NTP (Hora)
+// ===============================
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 3600;
+const int daylightOffset_sec = 3600;
+
+void initTime() {
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+}
+
+String getFormattedTime() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        return "00/00/0000 00:00:00";
+    }
+    char timeString[25];
+    strftime(timeString, sizeof(timeString), "%d/%m/%Y %H:%M:%S", &timeinfo);
+    return String(timeString);
+}
+
+// ===============================
+// Sensores
+// ===============================
+DHT dht26(26, DHT11);
+Adafruit_CCS811 sensor_ccs811;
+
+// ===============================
+// Control de Intervalos
+// ===============================
+const unsigned long serialInterval = 20000; // Intervalo imprimir en monitor 20s
+const unsigned long sendInterval = 20000; // Intervalo de envio 20s
+unsigned long lastSerialTime = 0;
+unsigned long lastSendTime = 0;
+
+void initWiFi() {
+    Serial.print("Conectando a WiFi: ");
+    Serial.println(ssid);
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nWiFi conectado. IP: " + WiFi.localIP().toString());
+}
+
+void initSensors() {
+    dht26.begin();
+    if (!sensor_ccs811.begin()) {
+        Serial.println("Error al iniciar el sensor CCS811.");
+        while (1);
+    }
+    while (!sensor_ccs811.available()) {
+        delay(100);
+    }
+}
+
+void printSensorData(float temperature, float humidity, float co2) {
+    Serial.println("-------------------------------------");
+    Serial.printf("Sensor: %s\n", deviceName);
+    Serial.printf("Temperatura: %.2f °C\n", temperature);
+    Serial.printf("Humedad: %.2f %%\n", humidity);
+    Serial.printf("CO2: %.2f ppm\n", co2);
+    Serial.printf("Fecha/Hora: %s\n", getFormattedTime().c_str());
+    Serial.println("-------------------------------------");
+}
+
+bool sendToInflux(float temperature, float humidity, float co2) {
+    HTTPClient http;
+    http.begin(influxURL);
+    http.addHeader("Authorization", influxToken);
+    http.addHeader("Content-Type", "text/plain");
+
+    String data = "sensors,device=" + String(deviceName) +
+                  " temperature=" + String(temperature) +
+                  ",humidity=" + String(humidity) +
+                  ",co2=" + String(co2);
+
+    int response = http.POST(data);
+    http.end();
+
+    if (response > 0) {
+        Serial.println("Datos enviados a InfluxDB correctamente.");
+        return true;
+    } else {
+        Serial.print("Error enviando a InfluxDB. Código: ");
+        Serial.println(response);
+        return false;
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    initWiFi();
+    initTime();
+    initSensors();
+    Serial.println("Sistema listo.");
+}
+
+void loop() {
+    unsigned long currentTime = millis();
+
+    // Leer sensores UNA SOLA VEZ por ciclo de loop
+    float temperature = dht26.readTemperature();
+    float humidity = dht26.readHumidity();
+    float co2 = 0;
+
+    // Lógica de espera activa para obtener un valor válido de CO2
+    unsigned long startTime = millis();
+    bool co2Read = false;
+    while (millis() - startTime < 2000) { // Máximo 2 segundos de espera
+        if (sensor_ccs811.available()) {
+            if (!sensor_ccs811.readData()) {
+                co2 = sensor_ccs811.geteCO2();
+                co2Read = true;
+                break;
+            }
+        }
+        delay(100); // Pequeña pausa antes de reintentar
+    }
+    if (!co2Read) {
+        Serial.println("No se pudo leer el valor de CO2 en este ciclo.");
+    }
+
+    if (currentTime - lastSerialTime >= serialInterval) {
+        printSensorData(temperature, humidity, co2);
+        lastSerialTime = currentTime;
+    }
+
+    if (currentTime - lastSendTime >= sendInterval) {
+        if (sendToInflux(temperature, humidity, co2)) {
+            Serial.println("Datos enviados a Influx.");
+        } else {
+            Serial.println("Error al enviar a Influx.");
+        }
+        lastSendTime = currentTime;
+    }
+
+    delay(100);
+}
