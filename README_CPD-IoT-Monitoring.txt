@@ -31,3 +31,9 @@ Este repositorio se distribuye bajo licencia MIT. Puedes reutilizar el código c
 ## 🔗 Cita recomendada (APA 7ª ed.)
 
 Rincón Bolaño, O. (2025). *CPD-IoT-Monitoring* [Repositorio en GitHub]. https://github.com/tu_usuario/CPD-IoT-Monitoring
+
+
+Autores:
+- **Alba Lucía Núñez**
+- **Otoniel Rincón Bolaño**
+- **Ramón Rodríguez**
